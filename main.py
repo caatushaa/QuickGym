@@ -73,7 +73,7 @@ async def show_main_menu(message: types.Message):
     await message.answer("Выберите действие:", reply_markup=keyboard)
 
 
-@dp.message(lambda message: message.text == "📅 Записаться на тренировку")
+@dp.message(lambda message: message.text and "Записаться на тренировку" in message.text)
 async def show_trainings(message: types.Message, state: FSMContext):
     trainings = db.get_available_trainings()
 
