@@ -76,18 +76,20 @@ async def show_main_menu(message: types.Message):
 @dp.message(lambda message: message.text and "Записаться на тренировку" in message.text)
 async def show_trainings(message: types.Message, state: FSMContext):
     trainings = db.get_available_trainings()
-
+    
     if not trainings:
         await message.answer("На данный момент нет доступных тренировок")
         return
-
-    keyboard = types.InlineKeyboardMarkup()
+    
+    buttons = []
     for training in trainings:
-        keyboard.add(types.InlineKeyboardButton(
+        buttons.append([types.InlineKeyboardButton(
             text=f"{training['name']} - {training['time']}",
             callback_data=f"training_{training['id']}"
-        ))
-
+        )])
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+    
     await message.answer("Выберите тренировку:", reply_markup=keyboard)
     await state.set_state(Booking.choosing_training)
 
@@ -98,12 +100,14 @@ async def process_training_selection(callback: types.CallbackQuery, state: FSMCo
     await state.update_data(training_id=training_id)
 
     dates = db.get_available_dates(training_id)
-    keyboard = types.InlineKeyboardMarkup()
+     buttons = []
     for date in dates:
-        keyboard.add(types.InlineKeyboardButton(
+        buttons.append([types.InlineKeyboardButton(
             text=date['date_str'],
             callback_data=f"date_{date['id']}"
-        ))
+        )])
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await callback.message.edit_text("Выберите дату:", reply_markup=keyboard)
     await state.set_state(Booking.choosing_time)
