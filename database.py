@@ -208,6 +208,40 @@ class Database:
                 return True
             return False
 
+    def get_user_subscription(self, user_id: int) -> Optional[Dict]:
+    """Получает информацию об абонементе пользователя"""
+    with self.get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM subscriptions 
+            WHERE user_id = ? AND expires_at > datetime('now')
+        ''', (user_id,))
+        result = cursor.fetchone()
+        return dict(result) if result else None
+
+def update_subscription_sessions(self, user_id: int) -> bool:
+    """Уменьшает количество оставшихся тренировок на 1"""
+    with self.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE subscriptions 
+            SET sessions_left = sessions_left - 1 
+            WHERE user_id = ? AND sessions_left > 0
+        ''', (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def create_trial_subscription(self, user_id: int):
+    """Создает пробный абонемент"""
+    with self.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO subscriptions 
+            (user_id, type, sessions_left, expires_at)
+            VALUES (?, 'trial', 1, datetime('now', '+7 days'))
+        ''', (user_id,))
+        conn.commit()
     def get_user_bookings(self, user_id: int) -> List[Dict]:
         """Возвращает записи пользователя"""
         with self.get_connection() as conn:
