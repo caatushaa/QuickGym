@@ -65,11 +65,30 @@ class Database:
                     FOREIGN KEY (schedule_id) REFERENCES schedule (id)
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER UNIQUE,
+                    type TEXT DEFAULT 'trial',
+                    sessions_left INTEGER DEFAULT 0,
+                    purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
 
             # Добавляем тестовые данные если их нет
             cursor.execute("SELECT COUNT(*) FROM trainings")
             if cursor.fetchone()[0] == 0:
                 self._add_sample_data(cursor)
+            cursor.execute("SELECT COUNT(*) FROM subscriptions")
+            if cursor.fetchone()[0] == 0:
+                cursor.executemany(
+                    "INSERT OR IGNORE INTO subscriptions (user_id, type, sessions_left, expires_at) VALUES (?, ?, ?, ?)",
+                    [
+                        (123456789, 'premium', 8, '2024-12-31 23:59:59'),  # Тестовый пользователь с абонементом
+                    ]
+                )
 
             conn.commit()
 
