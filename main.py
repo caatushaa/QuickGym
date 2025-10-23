@@ -1,4 +1,7 @@
 import os
+if os.getenv('STOP_BOT') == 'true':
+    print("Bot stopped")
+    exit(0)
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types
