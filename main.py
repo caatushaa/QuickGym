@@ -81,6 +81,7 @@ async def show_trainings(message: types.Message, state: FSMContext):
         await message.answer("На данный момент нет доступных тренировок")
         return
     
+    # ИСПРАВЛЕННАЯ СТРОКА - передаем кнопки в конструктор
     buttons = []
     for training in trainings:
         buttons.append([types.InlineKeyboardButton(
@@ -98,9 +99,15 @@ async def show_trainings(message: types.Message, state: FSMContext):
 async def process_training_selection(callback: types.CallbackQuery, state: FSMContext):
     training_id = int(callback.data.split("_")[1])
     await state.update_data(training_id=training_id)
-
+    
     dates = db.get_available_dates(training_id)
-     buttons = []
+    
+    if not dates:
+        await callback.message.edit_text("❌ Нет доступных дат для этой тренировки")
+        await state.clear()
+        return
+    
+    buttons = []
     for date in dates:
         buttons.append([types.InlineKeyboardButton(
             text=date['date_str'],
@@ -108,7 +115,7 @@ async def process_training_selection(callback: types.CallbackQuery, state: FSMCo
         )])
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
-
+    
     await callback.message.edit_text("Выберите дату:", reply_markup=keyboard)
     await state.set_state(Booking.choosing_time)
 
