@@ -1,5 +1,5 @@
 import sqlite3
-import os
+#import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
@@ -14,6 +14,38 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def create_premium_subscription(self, user_id: int):
+        """Создает премиум абонемент"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO subscriptions 
+                (user_id, type)
+                VALUES (?, 'premium')
+            ''', (user_id,))
+            conn.commit()
+
+    def create_trial_subscription(self, user_id: int):
+        """Создает пробный абонемент"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO subscriptions 
+                (user_id, type)
+                VALUES (?, 'trial')
+            ''', (user_id,))
+            conn.commit()
+
+    def has_duplicate_booking(self, user_id: int, schedule_id: int) -> bool:
+        """Проверяет есть ли уже запись на эту тренировку"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM bookings 
+                WHERE user_id = ? AND schedule_id = ? AND status = 'active'
+            ''', (user_id, schedule_id))
+            return cursor.fetchone() is not None
 
     def init_db(self):
         """Инициализация базы данных с тестовыми данными"""
@@ -70,9 +102,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER UNIQUE,
                     type TEXT DEFAULT 'trial',
-                    sessions_left INTEGER DEFAULT 0,
                     purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
@@ -81,16 +111,47 @@ class Database:
             cursor.execute("SELECT COUNT(*) FROM trainings")
             if cursor.fetchone()[0] == 0:
                 self._add_sample_data(cursor)
-            cursor.execute("SELECT COUNT(*) FROM subscriptions")
-            if cursor.fetchone()[0] == 0:
-                cursor.executemany(
-                    "INSERT OR IGNORE INTO subscriptions (user_id, type, sessions_left, expires_at) VALUES (?, ?, ?, ?)",
-                    [
-                        (123456789, 'premium', 8, '2024-12-31 23:59:59'),  # Тестовый пользователь с абонементом
-                    ]
-                )
 
             conn.commit()
+
+    def get_user_bookings(self, user_id: int) -> List[Dict]:
+        """Возвращает записи пользователя"""
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    b.id as booking_id,
+                    t.name as training_name,
+                    s.datetime as date,
+                    b.status
+                FROM bookings b
+                JOIN schedule s ON b.schedule_id = s.id
+                JOIN trainings t ON s.training_id = t.id
+                WHERE b.user_id = ?
+                ORDER BY s.datetime DESC
+            ''', (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_booking_by_id(self, booking_id: int):
+        """Возвращает информацию о записи по ID"""
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    b.id,
+                    b.user_id,
+                    b.status,
+                    t.name as training_name,
+                    s.datetime as date
+                FROM bookings b
+                JOIN schedule s ON b.schedule_id = s.id
+                JOIN trainings t ON s.training_id = t.id
+                WHERE b.id = ?
+            ''', (booking_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
 
     def _add_sample_data(self, cursor):
         """Добавляет тестовые данные"""
@@ -157,13 +218,27 @@ class Database:
             ''', (user_id, name, phone, username))
             conn.commit()
 
+    # def get_available_trainings(self) -> List[Dict]:
+    #     """Возвращает список доступных тренировок"""
+    #     with self.get_connection() as conn:
+    #         conn.row_factory = sqlite3.Row
+    #         cursor = conn.cursor()
+    #         cursor.execute('''
+    #             SELECT t.id, t.name, s.datetime as time
+    #             FROM trainings t
+    #             JOIN schedule s ON t.id = s.training_id
+    #             WHERE s.available_slots > 0
+    #             AND s.datetime > datetime('now')
+    #             ORDER BY s.datetime
+    #         ''')
+    #         return [dict(row) for row in cursor.fetchall()]
     def get_available_trainings(self) -> List[Dict]:
         """Возвращает список доступных тренировок"""
         with self.get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT t.id, t.name, s.datetime as time 
+                SELECT DISTINCT t.id, t.name, s.datetime as time 
                 FROM trainings t
                 JOIN schedule s ON t.id = s.training_id
                 WHERE s.available_slots > 0
@@ -200,11 +275,22 @@ class Database:
             result = cursor.fetchone()
             return dict(result) if result else None
 
-    def create_booking(self, user_id: int, schedule_id: int) -> bool:
-        """Создает запись на тренировку"""
+    def create_booking(self, user_id: int, schedule_id: int, subscription_type: str = None) -> bool:
+        """Создает запись на тренировку с проверкой ограничений"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
+            # Проверяем дублирующую запись
+            if self.has_duplicate_booking(user_id, schedule_id):
+                return False
+
+            # Для пользователей без абонемента или с пробным - ограничение 1 запись
+            if not subscription_type or subscription_type == 'trial':
+                bookings_count = self.get_user_bookings_count(user_id)
+                if bookings_count >= 1:
+                    return False
+
+            # Проверяем есть ли свободные места
             cursor.execute(
                 "SELECT available_slots FROM schedule WHERE id = ?",
                 (schedule_id,)
@@ -212,11 +298,13 @@ class Database:
             result = cursor.fetchone()
 
             if result and result[0] > 0:
+                # Создаем запись
                 cursor.execute('''
                     INSERT INTO bookings (user_id, schedule_id)
                     VALUES (?, ?)
                 ''', (user_id, schedule_id))
 
+                # Уменьшаем количество свободных мест
                 cursor.execute('''
                     UPDATE schedule 
                     SET available_slots = available_slots - 1 
@@ -227,62 +315,109 @@ class Database:
                 return True
             return False
 
-    def get_user_subscription(self, user_id: int) -> Optional[Dict]:
-    """Получает информацию об абонементе пользователя"""
-    with self.get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT * FROM subscriptions 
-            WHERE user_id = ? AND expires_at > datetime('now')
-        ''', (user_id,))
-        result = cursor.fetchone()
-        return dict(result) if result else None
+    def get_user_subscription(self, user_id: int):
+        """Получает информацию об абонементе пользователя"""
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM subscriptions WHERE user_id = ?',
+                (user_id,)
+            )
+            result = cursor.fetchone()
+            return dict(result) if result else None
 
-def update_subscription_sessions(self, user_id: int) -> bool:
-    """Уменьшает количество оставшихся тренировок на 1"""
-    with self.get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE subscriptions 
-            SET sessions_left = sessions_left - 1 
-            WHERE user_id = ? AND sessions_left > 0
-        ''', (user_id,))
-        conn.commit()
-        return cursor.rowcount > 0
+    def get_user_bookings_count(self, user_id: int) -> int:
+        """Возвращает количество активных записей пользователя"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*) FROM bookings 
+                WHERE user_id = ? AND status = 'active'
+            ''', (user_id,))
+            return cursor.fetchone()[0]
 
-def create_trial_subscription(self, user_id: int):
-    """Создает пробный абонемент"""
-    with self.get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO subscriptions 
-            (user_id, type, sessions_left, expires_at)
-            VALUES (?, 'trial', 1, datetime('now', '+7 days'))
-        ''', (user_id,))
-        conn.commit()
-    def get_user_bookings(self, user_id: int) -> List[Dict]:
-        """Возвращает записи пользователя"""
+    # def get_training_types(self):
+    #     """Возвращает список типов тренировок"""
+    #     with self.get_connection() as conn:
+    #         cursor = conn.cursor()
+    #         cursor.execute('SELECT DISTINCT id, name FROM trainings')
+    #         return [dict(row) for row in cursor.fetchall()]
+
+    def get_training_types(self):
+        """Возвращает список типов тренировок"""
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row  # Добавьте эту строку
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, name FROM trainings')  # Убрали DISTINCT
+            results = cursor.fetchall()
+            return [dict(row) for row in results]  # Преобразуем в словари
+
+    def get_trainings_by_type(self, training_type_id: int):
+        """Возвращает тренировки определенного типа"""
         with self.get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT 
-                    t.name as training_name,
-                    s.datetime as date,
-                    b.status
-                FROM bookings b
-                JOIN schedule s ON b.schedule_id = s.id
-                JOIN trainings t ON s.training_id = t.id
-                WHERE b.user_id = ?
-                ORDER BY s.datetime DESC
-            ''', (user_id,))
+                SELECT t.id, t.name, s.datetime as time 
+                FROM trainings t
+                JOIN schedule s ON t.id = s.training_id
+                WHERE t.id = ?
+                AND s.available_slots > 0
+                AND s.datetime > datetime('now')
+                ORDER BY s.datetime
+            ''', (training_type_id,))
             return [dict(row) for row in cursor.fetchall()]
 
+    # В класс Database добавим метод:
 
-# Для тестирования базы данных
-if __name__ == "__main__":
-    db = Database("test.db")
-    print("База данных инициализирована успешно!")
-    trainings = db.get_available_trainings()
-    print("Доступные тренировки:", trainings)
+    def get_training_schedule(self, training_id: int) -> List[Dict]:
+        """Возвращает расписание для конкретной тренировки"""
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT s.id, s.datetime, s.available_slots
+                FROM schedule s
+                WHERE s.training_id = ?
+                AND s.available_slots > 0
+                AND s.datetime > datetime('now')
+                ORDER BY s.datetime
+            ''', (training_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def cancel_booking(self, user_id: int, booking_id: int) -> bool:
+        """Отменяет запись на тренировку и возвращает место"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Получаем schedule_id для возврата места
+            cursor.execute('''
+                SELECT schedule_id FROM bookings 
+                WHERE id = ? AND user_id = ? AND status = 'active'
+            ''', (booking_id, user_id))
+            result = cursor.fetchone()
+
+            if not result:
+                return False
+
+            schedule_id = result[0]
+
+            # Обновляем статус записи
+            cursor.execute('''
+                UPDATE bookings SET status = 'cancelled' 
+                WHERE id = ? AND user_id = ?
+            ''', (booking_id, user_id))
+
+            # Возвращаем место в расписание
+            cursor.execute('''
+                UPDATE schedule 
+                SET available_slots = available_slots + 1 
+                WHERE id = ?
+            ''', (schedule_id,))
+
+            conn.commit()
+            return cursor.rowcount > 0
+
+
+
